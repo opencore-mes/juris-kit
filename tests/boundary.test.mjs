@@ -1,4 +1,4 @@
-// The boundary (src/README.md, "The boundary" and "The browser floor"), held by a test: what a
+// The boundary (REFERENCE.md, "The boundary" and "The browser floor"), held by a test: what a
 // browser downloads imports nothing it cannot load, nothing in src/ reads the environment, no import
 // cycle, and nothing newer than the browser floor in the files a browser runs.
 import { test } from "node:test";

@@ -1,6 +1,6 @@
 {
   "name": "@opencore-mes/juris-kit",
-  "version": "0.91.0",
+  "version": "0.91.2",
   "description": "A framework for server-rendered web apps whose pages stay live: no build step, no runtime dependency",
   "keywords": [
     "framework",
@@ -32,6 +32,7 @@
     "*.js",
     "server/",
     "README.md",
+    "REFERENCE.md",
     "LICENSE",
     "NOTICE"
   ],
