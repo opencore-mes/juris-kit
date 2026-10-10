@@ -855,7 +855,7 @@ export default class Juris {
     // preloaded call failed, read or not. The page carries that request's failure (a slot drawn with
     // it, and the `$error` in its state, which the browser reads again), so a cache must not keep it
     // (page-cache.js `decide`).
-    async renderRequest({ preload = [], state = {}, layout, namespace = null, trace = false }) {
+    async renderRequest({ preload = [], state = {}, layout, namespace = null, trace = false, after = null }) {
         if (layout === undefined) throw new Error("Juris.renderRequest: layout is required");
         const cache = await this.preload(preload);
         // The state is copied too: its roots are often objects the server keeps (a cached
@@ -864,7 +864,10 @@ export default class Juris {
         const html = this.renderToString(layout, namespace, { trace });
         const json = this.serializeState();
         const result = (name, ...args) => answerIn(cache.calls, this.callKey(name, args));
-        return trace ? { html, json, result, cache, trace: { ...this.renderTrace(), failed: failedIn(cache.calls) } } : { html, json, result, cache };
+        // Asked here, with nothing awaited since the render: what the render set is still this request's.
+        const later = after ? after(result) : undefined;
+        const out = trace ? { html, json, result, cache, trace: { ...this.renderTrace(), failed: failedIn(cache.calls) } } : { html, json, result, cache };
+        return after ? { ...out, after: later } : out;
     }
 
     renderToString(layout, namespace = null, options = {}) {

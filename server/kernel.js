@@ -187,7 +187,13 @@ export function createPagePipeline(options = {}) {
         // Every hook that feeds the render runs here, before it; nothing runs inside it.
         const calls = [...((await preload(ctx)) ?? []), ...resolved.preload];
         const roots = (await state(ctx)) ?? {};
-        const rendered = await juris.renderRequest({ preload: calls, state: { ...resolved.state, ...roots }, layout, trace: true });
+        // What the page is called: from its own data when the route knows where its name lives, so
+        // no second fetch is needed to title it, and otherwise the route's own title. The router's
+        // titleOf, which the browser asks too (hydrate's `title`), so the name does not change when
+        // the page boots. Worked out inside the render (`after`): a titleFrom reading what the render
+        // set reads this page's, never a request's that began while this one awaited notFound.
+        const titled = (result) => titleOf(route.head, own ? result(...own) : undefined, { fallback, suffix, max });
+        const rendered = await juris.renderRequest({ preload: calls, state: { ...resolved.state, ...roots }, layout, trace: true, after: titled });
 
         // A page about one thing that is not there is a 404, not a 200 saying so: a 404 is never
         // kept, while a 200 for every unknown name would let anyone fill the cache with junk and
@@ -197,11 +203,7 @@ export function createPagePipeline(options = {}) {
         let status = route.notFound ? 404 : 200;
         if (status === 200 && own && (await notFound(ownResult, ctx))) status = 404;
 
-        // What the page is called: from its own data when the route knows where its name lives, so
-        // no second fetch is needed to title it, and otherwise the route's own title. The router's
-        // titleOf, which the browser asks too (hydrate's `title`), so the name does not change when
-        // the page boots.
-        let text = titleOf(route.head, own ? ownResult : undefined, { fallback, suffix, max });
+        let text = rendered.after;
         if (decorate) text = decorate(text);
 
         const extraHead = (await head({ ...ctx, title: text })) ?? {};

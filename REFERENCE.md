@@ -263,6 +263,11 @@ not carry, served to the next visitor, is a leak.
 
 **What Juris does.**
 
+- `renderRequest({ after })`: `after(result)` is called inside the render's synchronous section,
+  after `renderToString` and before the next request can begin, with the same `result(name, ...args)`
+  the render answers; what it returns is the render's `after`. For what must read what the render
+  itself set (module state an app's components write as they draw), which any later `await` could
+  see replaced by another request's render.
 - A server render can be traced (`renderRequest({ trace: true })`): the services it called, the
   state roots it read (`peek` included), its live queries, the flags a plugin set (the clock's), any
   component it could not find, and each service whose preloaded call failed (`failed`, read or not).
@@ -1264,7 +1269,10 @@ included, is drawn past it; a location it answers is the render's `{ redirect }`
   the same options, `hydrate`'s `title`, names the page the same): `head.titleFrom(own)`, cut to
   `title.max` characters and followed by `title.suffix`; otherwise `head.title`, otherwise
   `title.fallback`; `title.decorate` is applied to whichever it is, and a failed call or a
-  `titleFrom` that throws never names a page. The description is the route's `head.description`
+  `titleFrom` that throws never names a page. It is worked out inside the render
+  (`renderRequest`'s `after`), so a `titleFrom` that reads what the page's own render set (a language
+  picked per person, held in a module of the app) reads this page's, never another request's that
+  began while this one waited on `notFound`. The description is the route's `head.description`
   unless `head(ctx)` gives one.
 - `head(ctx)` gives `renderDocument` the rest of the head, and the kernel adds the title, the
   canonical (`origin` and the page's path, encoded, so a raw request path cannot break the

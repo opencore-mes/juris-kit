@@ -613,3 +613,25 @@ test("a page's own headers: the hashes of its inline scripts are given to `heade
     await assert.rejects(wrong.render("/", null), /content-type/i);
     await assert.rejects(Promise.resolve().then(() => createPagePipeline({ juris, router, entry: "/boot.js", headers: {} })), /headers/);
 });
+
+// ---- F28: the title worked out inside the render ---------------------------------------------
+
+test("F28 pipeline: a title is worked out inside its page's render, never after another request's has begun", async () => {
+    // What a render sets for the page it draws (an app's language, picked per person), read by the
+    // route's titleFrom: two pages drawn at once, the first one's notFound waiting, must each be titled
+    // from their own render.
+    let current = null;
+    const { juris, router } = await appOf({
+        services: { async item(id) { return { id }; } },
+        routes: [{ path: "/items/:id", name: "item", component: "Item", preload: ({ params }) => [["item", params.id]], head: { titleFrom: (item) => `${item?.id} in ${current}` } }],
+        components: { Item: (props, api) => { current = api.getState("lang"); return { p: { textContent: "item" } }; } },
+    });
+    const pipeline = createPagePipeline({
+        juris, router, entry: "/boot.js",
+        state: ({ viewer }) => ({ lang: viewer.lang }),
+        notFound: async (own) => { if (own?.id === "a") await sleep(20); return false; },
+    });
+    const [a, b] = await Promise.all([pipeline.render("/items/a", { id: "u1", lang: "de" }), (async () => { await sleep(5); return pipeline.render("/items/b", { id: "u2", lang: "ja" }); })()]);
+    assert.equal(titleIn(a.body.toString()), "a in de");
+    assert.equal(titleIn(b.body.toString()), "b in ja");
+});
