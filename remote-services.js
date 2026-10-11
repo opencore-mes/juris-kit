@@ -105,6 +105,9 @@ export { diff };
 //   idleMs = 10000       how long a stream with nothing left to watch is kept before it is given back,
 //                        whole milliseconds from 0 to 2^31 - 1; 0 gives it back once the current turn
 //                        of the event loop is over, so only a view re-made in the same turn keeps it
+//   hiddenMs = null      how long a tab may stay hidden before its stream is given back (its subscriptions kept,
+//                        its paths "offline"); shown again, a new stream re-announces them all, each "pending"
+//                        until its fresh full. null: kept however long it is hidden
 //   statePath = "$live"  where the connection is written: `.connected`, true from a hello until the
 //                        stream is lost, and `.generation`, one more on every hello (absent before the
 //                        first), so a component that watches it hears of every stream the server
@@ -159,7 +162,7 @@ const liveClients = new WeakMap();      // juris -> { connectedPath, active }
 const MAX_WAIT = 2 ** 31 - 1;
 const shown = (value) => (typeof value === "string" ? JSON.stringify(value) : String(value));
 
-const SSE_OPTIONS = new Set(["base", "EventSourceImpl", "idleMs", "statePath", "onHello", "onReconnect", "onError", "backoff"]);
+const SSE_OPTIONS = new Set(["base", "EventSourceImpl", "idleMs", "hiddenMs", "statePath", "onHello", "onReconnect", "onError", "backoff"]);
 const BACKOFF_OPTIONS = new Set(["minMs", "maxMs"]);
 
 export function sseClient(options = {}) {
@@ -170,7 +173,7 @@ export function sseClient(options = {}) {
         if (!SSE_OPTIONS.has(key)) throw new TypeError(`sseClient: "${key}" is not an option (${[...SSE_OPTIONS].join(", ")})`);
     }
     const {
-        base = "/api", EventSourceImpl, idleMs = 10_000, statePath = "$live",
+        base = "/api", EventSourceImpl, idleMs = 10_000, hiddenMs = null, statePath = "$live",
         onHello, onReconnect, onError, backoff = {},
     } = options;
     if (backoff !== null && typeof backoff === "object") {
@@ -187,6 +190,10 @@ export function sseClient(options = {}) {
     // stream back; a fraction or a string is no whole number of milliseconds either.
     if (!Number.isInteger(idleMs) || idleMs < 0 || idleMs > MAX_WAIT) {
         throw new TypeError(`sseClient: idleMs is a whole number of milliseconds from 0 to ${MAX_WAIT}, not ${shown(idleMs)}`);
+    }
+    // A hidden tab's stream given back after this long (null: kept, as before).
+    if (hiddenMs !== null && (!Number.isInteger(hiddenMs) || hiddenMs < 0 || hiddenMs > MAX_WAIT)) {
+        throw new TypeError(`sseClient: hiddenMs is null or a whole number of milliseconds from 0 to ${MAX_WAIT}, not ${shown(hiddenMs)}`);
     }
     if (typeof statePath !== "string" || !statePath) throw new TypeError(`sseClient: statePath is a state path, such as "$live", not ${JSON.stringify(statePath)}`);
     for (const [name, hook] of Object.entries({ onHello, onReconnect, onError })) {
@@ -500,8 +507,18 @@ export function sseClient(options = {}) {
         // A tab brought back to the front with no stream (it was dropped while hidden, or a reopen is
         // waiting on its backoff) connects now rather than on the timer.
         const doc = typeof document !== "undefined" && document?.addEventListener ? document : null;
+        // A tab hidden for hiddenMs gives its stream back (a pause: its subscriptions kept, its paths offline), so a
+        // server is not kept sending to tabs nobody looks at; shown again before then, it keeps it.
+        let hiddenTimer = null;
         const onVisible = () => {
-            if (doc.visibilityState !== "visible" || stream || !subscriptions.size || disposed) return;
+            if (disposed) return;
+            if (doc.visibilityState === "hidden") {
+                if (hiddenMs !== null && hiddenTimer === null) hiddenTimer = later(() => { hiddenTimer = null; if (doc.visibilityState === "hidden" && stream) transport.close(); }, hiddenMs);
+                return;
+            }
+            cancel(hiddenTimer);
+            hiddenTimer = null;
+            if (doc.visibilityState !== "visible" || stream || !subscriptions.size) return;
             ensureStream();              // which cancels the wait
         };
         doc?.addEventListener("visibilitychange", onVisible);

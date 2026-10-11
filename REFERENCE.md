@@ -993,7 +993,13 @@ The browser half of services and live queries. The server half, `serviceDispatch
   instance, subscribes posted to `${base}/_live`, and each patch written where the view asked.
   Options: `base`; `EventSourceImpl`, the class to use (a test's fake); `idleMs = 10000`, how long a
   stream with nothing left to watch is kept, so a navigation reuses it (0: until the current turn of
-  the event loop is over); `statePath = "$live"`, where the connection is written, `.connected` and
+  the event loop is over); `hiddenMs = null`, how long a tab may stay hidden (`document.visibilityState`, the
+  tab in the background, the window minimised) before its stream is given back to the server: its
+  subscriptions are kept and its paths are `"offline"`, nothing is sent to it meanwhile, and the
+  moment it is shown again a new stream opens, every subscription is announced again and each path is
+  `"pending"` until its fresh full answer (a whole number of milliseconds from 0 to 2^31 − 1; `null`,
+  the default, keeps the stream however long the tab is hidden, as before). A tab shown again before
+  `hiddenMs` keeps its stream. A hidden tab's pause is a close on purpose: no reconnect is counted; `statePath = "$live"`, where the connection is written, `.connected` and
   `.generation`, one more on every hello (continuing from what the state holds), so a component that
   watches it hears of every stream the server greets without polling, and `.reconnects`, one more
   on every hello that brings back a stream that was lost (an error: an instance restarted, the
@@ -1021,7 +1027,7 @@ The browser half of services and live queries. The server half, `serviceDispatch
   server during a rolling deploy, and an answer with another code is never taken for a stale id.
 - A hook that throws or rejects goes to the console and stops nothing. Construction refuses a
   `backoff` whose bounds are not whole milliseconds with 1 ≤ `minMs` ≤ `maxMs` ≤ 2^31 − 1, an
-  `idleMs` that is not a whole number of milliseconds from 0 to 2^31 − 1, an empty `statePath` and
+  `idleMs` or a `hiddenMs` (other than `null`) that is not a whole number of milliseconds from 0 to 2^31 − 1, an empty `statePath` and
   a hook that is not a function, and a key that is none of the options above, or one in `backoff`
   other than `minMs` and `maxMs` (`hydrate` hands its `live` object here, so the same keys hold
   there).

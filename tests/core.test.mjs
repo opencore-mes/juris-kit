@@ -381,6 +381,60 @@ async function liveClient(answer = () => ({ ok: true }), fn) {
 const hello = (client = "c1") => FakeEventSource.last.emit("hello", { client });
 const keyOf = (juris, name, ...args) => juris.callKey(name, args);
 
+// A tab hidden for hiddenMs gives its stream back, and takes one again, with every subscription, when it is shown.
+test("F12: a tab hidden for hiddenMs gives its stream back; shown again, a new stream, every path pending until its fresh full", async () => {
+    const listeners = new Set();
+    const doc = { visibilityState: "visible", addEventListener: (t, fn) => { if (t === "visibilitychange") listeners.add(fn); }, removeEventListener: (t, fn) => listeners.delete(fn) };
+    const show = (state) => { doc.visibilityState = state; for (const fn of listeners) fn(); };
+    const posts = [];
+    const fetch = async (url, init) => { posts.push(JSON.parse(init.body)); return { ok: true, status: 200, statusText: "", json: async () => ({}) }; };
+    await withGlobal({ fetch, document: doc }, async () => {
+        const juris = new Juris({ isServer: false, services: { rows: async () => [] } });
+        const plugin = sseClient({ EventSourceImpl: FakeEventSource, idleMs: 0, hiddenMs: 20, backoff: { minMs: 5, maxMs: 5 } });
+        juris.use(plugin);
+        try {
+            juris.live("rows.list", "rows", 1);
+            hello("c1");
+            await tick();
+            const key = keyOf(juris, "rows", 1);
+            FakeEventSource.last.emit("patch", { key, full: [{ id: 1 }] });
+            const first = FakeEventSource.last;
+            // Hidden a moment, shown again before hiddenMs: the same stream.
+            show("hidden");
+            await new Promise((r) => setTimeout(r, 5));
+            show("visible");
+            await new Promise((r) => setTimeout(r, 30));
+            assert.equal(first.readyState, 0, "shown again in time: kept");
+            assert.equal(juris.api.liveState("rows.list"), "live");
+            // Hidden longer: given back, the path offline, its data left as it was, no reconnect counted.
+            show("hidden");
+            await new Promise((r) => setTimeout(r, 40));
+            assert.equal(first.readyState, 2, "given back to the server");
+            assert.equal(juris.api.liveState("rows.list"), "offline");
+            assert.deepEqual(juris.toRaw(juris.stateManager.peek("rows.list")), [{ id: 1 }]);
+            // Shown: a new stream, the subscription announced again, pending until its full.
+            const subscribesBefore = posts.length;
+            show("visible");
+            assert.notEqual(FakeEventSource.last, first, "a new stream");
+            hello("c2");
+            await tick();
+            assert.ok(posts.length > subscribesBefore, "the subscription announced again");
+            assert.equal(juris.api.liveState("rows.list"), "pending");
+            FakeEventSource.last.emit("patch", { key, full: [{ id: 2 }] });
+            assert.equal(juris.api.liveState("rows.list"), "live");
+            assert.equal(juris.stateManager.peek("$live.reconnects"), undefined, "a pause is no reconnect");
+        } finally {
+            plugin.dispose();
+        }
+    });
+});
+
+test("F12: hiddenMs is null or a whole number of milliseconds", () => {
+    assert.throws(() => sseClient({ hiddenMs: -1 }), /hiddenMs is null or a whole number of milliseconds/);
+    assert.throws(() => sseClient({ hiddenMs: "60000" }), /hiddenMs/);
+    assert.doesNotThrow(() => sseClient({ hiddenMs: null }));
+});
+
 test("F12: pending until the first full, then live", async () => {
     await liveClient(undefined, async (juris) => {
         juris.live("rows.list", "rows", 1);
