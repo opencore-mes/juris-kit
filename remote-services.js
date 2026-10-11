@@ -376,6 +376,8 @@ export function sseClient(options = {}) {
             if (first !== undefined) juris.refreshCached?.(key, juris.toRaw(juris.peek(first))); // a TTL cache entry follows the push
         };
 
+        // Set once the document is known (below): a stream opened in a tab already hidden starts its hiddenMs too.
+        let armHidden = null;
         const ensureStream = () => {
             if (stream || !ES || disposed) return;
             // A stream opened before a reopen's wait is over (a subscribe, the tab brought back into
@@ -387,6 +389,7 @@ export function sseClient(options = {}) {
             // No id in the URL: the server mints one and sends it back as `hello`. A reconnect
             // therefore gets a fresh id, which is why the announce lives in `hello` and not `open`.
             stream = new ES(`${base}/events`);
+            armHidden?.();
             stream.addEventListener("hello", (event) => {
                 try {
                     clientId = JSON.parse(event.data).client ?? null;
@@ -510,12 +513,12 @@ export function sseClient(options = {}) {
         // A tab hidden for hiddenMs gives its stream back (a pause: its subscriptions kept, its paths offline), so a
         // server is not kept sending to tabs nobody looks at; shown again before then, it keeps it.
         let hiddenTimer = null;
+        armHidden = () => {
+            if (doc?.visibilityState === "hidden" && hiddenMs !== null && hiddenTimer === null) hiddenTimer = later(() => { hiddenTimer = null; if (doc.visibilityState === "hidden" && stream) transport.close(); }, hiddenMs);
+        };
         const onVisible = () => {
             if (disposed) return;
-            if (doc.visibilityState === "hidden") {
-                if (hiddenMs !== null && hiddenTimer === null) hiddenTimer = later(() => { hiddenTimer = null; if (doc.visibilityState === "hidden" && stream) transport.close(); }, hiddenMs);
-                return;
-            }
+            if (doc.visibilityState === "hidden") return armHidden();
             cancel(hiddenTimer);
             hiddenTimer = null;
             if (doc.visibilityState !== "visible" || stream || !subscriptions.size) return;

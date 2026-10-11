@@ -999,7 +999,8 @@ The browser half of services and live queries. The server half, `serviceDispatch
   moment it is shown again a new stream opens, every subscription is announced again and each path is
   `"pending"` until its fresh full answer (a whole number of milliseconds from 0 to 2^31 − 1; `null`,
   the default, keeps the stream however long the tab is hidden, as before). A tab shown again before
-  `hiddenMs` keeps its stream. A hidden tab's pause is a close on purpose: no reconnect is counted; `statePath = "$live"`, where the connection is written, `.connected` and
+  `hiddenMs` keeps its stream; one already hidden when its stream opens (a tab opened in the
+  background) counts `hiddenMs` from that opening. A hidden tab's pause is a close on purpose: no reconnect is counted; `statePath = "$live"`, where the connection is written, `.connected` and
   `.generation`, one more on every hello (continuing from what the state holds), so a component that
   watches it hears of every stream the server greets without polling, and `.reconnects`, one more
   on every hello that brings back a stream that was lost (an error: an instance restarted, the

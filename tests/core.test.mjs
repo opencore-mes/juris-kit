@@ -429,6 +429,30 @@ test("F12: a tab hidden for hiddenMs gives its stream back; shown again, a new s
     });
 });
 
+test("F12: a tab already hidden when its stream opens (opened in the background) gives it back after hiddenMs too", async () => {
+    const listeners = new Set();
+    const doc = { visibilityState: "hidden", addEventListener: (t, fn) => { if (t === "visibilitychange") listeners.add(fn); }, removeEventListener: (t, fn) => listeners.delete(fn) };
+    const fetch = async () => ({ ok: true, status: 200, statusText: "", json: async () => ({}) });
+    await withGlobal({ fetch, document: doc }, async () => {
+        const juris = new Juris({ isServer: false, services: { rows: async () => [] } });
+        const plugin = sseClient({ EventSourceImpl: FakeEventSource, idleMs: 0, hiddenMs: 20, backoff: { minMs: 5, maxMs: 5 } });
+        juris.use(plugin);
+        try {
+            juris.live("rows.list", "rows", 1);
+            hello("c1");
+            const opened = FakeEventSource.last;
+            await new Promise((r) => setTimeout(r, 40));
+            assert.equal(opened.readyState, 2, "never shown, given back all the same");
+            assert.equal(juris.api.liveState("rows.list"), "offline");
+            doc.visibilityState = "visible";
+            for (const fn of listeners) fn();
+            assert.notEqual(FakeEventSource.last, opened, "shown: a new stream");
+        } finally {
+            plugin.dispose();
+        }
+    });
+});
+
 test("F12: hiddenMs is null or a whole number of milliseconds", () => {
     assert.throws(() => sseClient({ hiddenMs: -1 }), /hiddenMs is null or a whole number of milliseconds/);
     assert.throws(() => sseClient({ hiddenMs: "60000" }), /hiddenMs/);
