@@ -655,3 +655,59 @@ test("a thrown status that is no HTTP error status answers 500", async () => {
         await host.close();
     }
 });
+
+// ---- a refusal before the body has arrived whole closes the connection ---------------------------------
+
+test("a refusal answered before the body has arrived whole says connection: close, and the socket ends with it", async () => {
+    const handler = serviceDispatcher({ f: () => 1 }, "/api", {});
+    const host = await serve(handler);
+    // Keep-alive from the client's side, so a `connection: close` in the answer is the server's word alone.
+    const agent = new http.Agent({ keepAlive: true });
+    // A body sent in pieces, the answer taken as it comes (the server may answer while the body is still on
+    // its way; a write that fails after that is the connection going, which is the point).
+    const sendBody = (path, headers, total) => new Promise((resolve) => {
+        const req = http.request({ port: host.port, host: "127.0.0.1", path, method: "POST", agent, headers: { ...headers, "content-length": total } });
+        req.on("error", () => { });
+        req.on("response", (res) => {
+            const socket = res.socket;   // detached from `res` once the agent takes it back: hold it to look later
+            res.resume();
+            res.on("end", () => setTimeout(() => resolve({ status: res.statusCode, connection: res.headers.connection, destroyed: socket.destroyed }), 100));
+        });
+        const piece = Buffer.alloc(64 * 1024, 120);
+        let sent = 0;
+        const write = () => {
+            while (sent < total) {
+                const n = Math.min(piece.length, total - sent);
+                sent += n;
+                if (!req.write(piece.subarray(0, n))) return req.once("drain", write);
+            }
+            req.end();
+        };
+        write();
+    });
+    try {
+        // 1.5 MB against the default limit of 1 MB: refused part-way, and the connection ends with the answer
+        const tooLarge = await sendBody("/api/f", { "content-type": "application/json" }, 1_500_000);
+        assert.equal(tooLarge.status, 413);
+        assert.equal(tooLarge.connection, "close");
+        assert.equal(tooLarge.destroyed, true, "the socket is closed after a 413 part-way through the body");
+        // the wrong type, refused before the body is read: the same
+        const wrongType = await sendBody("/api/f", { "content-type": "text/plain" }, 100_000);
+        assert.equal(wrongType.status, 415);
+        assert.equal(wrongType.connection, "close");
+        assert.equal(wrongType.destroyed, true, "the socket is closed after a 415 with a body still to come");
+        // a body read whole, refused for another reason: the connection is kept, as before
+        const whole = await new Promise((resolve) => {
+            const req = http.request({ port: host.port, host: "127.0.0.1", path: "/api/nothere", method: "POST", agent, headers: { "content-type": "application/json" } });
+            req.on("response", (res) => { const socket = res.socket; res.resume(); res.on("end", () => setTimeout(() => resolve({ status: res.statusCode, connection: res.headers.connection, destroyed: socket.destroyed }), 100)); });
+            req.end("[1]");
+        });
+        assert.equal(whole.status, 404);
+        assert.notEqual(whole.connection, "close");
+        assert.equal(whole.destroyed, false, "a refusal after the whole body keeps the connection");
+        assert.deepEqual(host.failures, []);
+    } finally {
+        agent.destroy();
+        await host.close();
+    }
+});

@@ -101,17 +101,52 @@ export const onThisSite = (location) => typeof location === "string" && location
 
 // The request's body as a Buffer, or null once it passes `limit` bytes (a megabyte unless told):
 // reading stops there, and the caller answers 413 in its own words. Counted as it arrives, so a
-// body with no Content-Length, or one that lies, is held to the same limit.
+// body with no Content-Length, or one that lies, is held to the same limit. The request stream is
+// left as it is, paused with the rest still to come (the iterator's default would destroy it, and
+// Node then reads that socket no more): the caller drains it (drainBody) before answering.
 export async function readBody(req, { limit = 1_000_000 } = {}) {
     if (typeof limit !== "number" || !(limit >= 0)) throw new TypeError(`readBody: limit must be a number of bytes, not ${String(limit)}`);
     const chunks = [];
     let size = 0;
-    for await (const chunk of req) {
+    for await (const chunk of req.iterator({ destroyOnReturn: false })) {
         size += chunk.length;
         if (size > limit) return null;
         chunks.push(chunk);
     }
     return Buffer.concat(chunks);
+}
+
+// The rest of a body nobody will read, read and dropped before the answer goes out. Answered at once
+// and closed, a request refused part-way (a 413 at the limit, a 415 at its type) leaves the client's
+// remaining bytes to meet a closed socket, and the reset that answers them can take the answer down
+// with it: the client then sees a failed connection, not the 413. Left open without reading, the
+// connection is poisoned instead: whatever arrives next is taken for the rest of that body (a proxy
+// in front that pools the connection sends the next request into it). So, as nginx's lingering close
+// does, the rest is read while it keeps coming, at most `idleMs` between pieces and `totalMs` in all,
+// and the answer then goes with `connection: close`. A client that has stopped sending, or never
+// stops, is not waited for beyond that. Resolves once the body has ended or the window has closed.
+export function drainBody(req, { idleMs = 1000, totalMs = 5000 } = {}) {
+    return new Promise((resolve) => {
+        if (req.complete || req.readableEnded || req.destroyed) return resolve();
+        let idle = null;
+        const done = () => {
+            clearTimeout(idle);
+            clearTimeout(whole);
+            req.off("data", onData);
+            req.off("end", done);
+            req.off("close", done);
+            req.off("error", done);
+            resolve();
+        };
+        const onData = () => { clearTimeout(idle); idle = setTimeout(done, idleMs); };
+        const whole = setTimeout(done, totalMs);
+        idle = setTimeout(done, idleMs);
+        req.on("data", onData);
+        req.once("end", done);
+        req.once("close", done);
+        req.once("error", done);
+        req.resume();
+    });
 }
 
 // ---- responses --------------------------------------------------------------------------------

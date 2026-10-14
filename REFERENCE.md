@@ -1380,7 +1380,13 @@ call.
 
 - **Calls.** Every POST must be sent as `application/json` (415 otherwise): a form on another site
   cannot send that type without a preflight, so a service that trusts a cookie cannot be called
-  from another site. `options.maxBody` caps a body (1 MB unless told; 413). `options.context(req,
+  from another site. `options.maxBody` caps a body (1 MB unless told; 413). A refusal answered before
+  the request has arrived whole (a 415 at its type, a 413 part-way through its body) first reads and
+  drops what is still coming (`drainBody`: at most a second between pieces, five in all), then says
+  `connection: close`, and the connection ends with the answer. Answered at once, the client's bytes
+  still on their way would be reset and could take the answer down with them; left open unread, the
+  rest of that body would be taken for the next request on a kept-alive connection, which a proxy in
+  front may pool for someone else's call (RFC 9112, 9.6). `options.context(req,
   res)` builds the context a service is called with as `this` (see "Who is calling"). A refusal
   answers `{ error, fields?, field?, code? }`: the message only if `exposeError` allows it ("request
   failed" otherwise), a service's `fields` as given, a singular `field` as it is and folded into
@@ -1463,7 +1469,7 @@ call.
 - **`forms: { allow, maxBody = 16384, redirect }`** is the no-JavaScript path, built on `invoke`: a
   form-encoded POST to a name in `allow` (any other is JSON-only, 415) is taken only when its Origin,
   or its Referer when a browser sends no Origin, names the host it was sent to (403 otherwise,
-  nothing run), with a body of at most `maxBody` bytes (413); an upload that ends before its body
+  nothing run), with a body of at most `maxBody` bytes (413, the connection closed with it); an upload that ends before its body
   does (a tab closed mid-send) runs nothing and is answered 400 if anyone is left to answer (it used
   to reject out of the dispatcher, into the host's 500); the fields as one object the service's
   one argument, the request's context its `this`. The answer is a 303 to `redirect(name, { ok,
@@ -1516,7 +1522,7 @@ Three things about the dispatcher that an app has to know:
 #### `server/http.js`
 
 **Exports:** `parseCookies`, `serializeCookie`, `appendSetCookie`, `clientIp`, `onThisSite`,
-`readBody`, `CACHE_CONTROL`, `pack`, `send`, `sendFile`.
+`readBody`, `drainBody`, `CACHE_CONTROL`, `pack`, `send`, `sendFile`.
 
 The HTTP pieces a server writes around its pages and services, from Node's own modules only; what a
 deployment decides is passed in.
@@ -1538,6 +1544,14 @@ deployment decides is passed in.
   path on this site, by the URL parser the browser will use: `/\t/elsewhere.example` and
   `/\\elsewhere.example` name another host and are refused, as is anything that is not a string
   starting with one `/`. The dispatcher's form answers use it; so should a server's own redirects.
+- `drainBody(req, { idleMs = 1000, totalMs = 5000 })` reads and drops the rest of a body nobody will
+  read, before a refusal is answered: a request refused part-way and closed at once leaves the client's
+  remaining bytes to meet a closed socket, and the reset that answers them can take the answer down
+  with it; left open unread, the connection is poisoned (the rest of the body is taken for the next
+  request, which a proxy in front may send into it). It resolves once the body has ended, or after
+  `idleMs` without a piece or `totalMs` in all; the answer then goes with `connection: close`. The
+  dispatcher does this for every refusal made before the body arrived whole; an app answering its own
+  413 after `readBody` does the same.
 - `readBody(req, { limit })` answers the body as a Buffer, or `null` once it passes the limit (a
   megabyte unless told), counted as it arrives.
 - `pack(text, { status, gzip })` gzips a body once (`gzip: false` keeps no gzip, `gz` is `null`,

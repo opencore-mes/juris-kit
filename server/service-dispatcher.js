@@ -30,7 +30,7 @@
 import { STATUS_CODES } from "node:http";
 import { liveKey, diff, CALL_KIND, LIVE_CODES } from "../live-protocol.js";
 import { EVERYTHING } from "./page-cache.js";
-import { readBody, onThisSite } from "./http.js";
+import { readBody, drainBody, onThisSite } from "./http.js";
 import { defaultExposeError, mayExpose, publicMessage } from "../errors.js";
 
 // Every page: the target a change whose reach is the whole site invalidates (a member's new avatar,
@@ -409,6 +409,20 @@ export function serviceDispatcher(services, base = "/api", options = {}) {
         res.end(JSON.stringify(body === undefined ? null : body));
     };
 
+    // A refusal answered before the request has arrived whole (a 415 at its type, a 413 part-way through
+    // its body) ends the connection with it: the rest of that body would otherwise be read as the next
+    // request on a kept-alive connection, and a proxy in front may pool it for someone else's call (RFC
+    // 9112, 9.6). The rest is read and dropped first (drainBody: answered and closed at once, the bytes
+    // still coming would be reset, and the answer with them), then the answer says `connection: close`
+    // and Node closes the socket once it is written.
+    const refuseEarly = async (req, res, status, body) => {
+        if (!req.complete) {
+            await drainBody(req);
+            res.setHeader("connection", "close");
+        }
+        send(res, status, body);
+    };
+
     // What the caller is told when something fails.
     //
     // A service's message used to go to the browser as-is. Most are written for the person (a form
@@ -423,7 +437,7 @@ export function serviceDispatcher(services, base = "/api", options = {}) {
         if (type !== "application/json") throw Object.assign(new Error("content-type must be application/json"), { status: 415 });
         const chunks = [];
         let size = 0;
-        for await (const chunk of req) {
+        for await (const chunk of req.iterator({ destroyOnReturn: false })) {   /* the rest stays readable: drainBody */
             size += chunk.length;
             if (size > maxBody) throw Object.assign(new Error(`body larger than ${maxBody} bytes`), { status: 413 });
             chunks.push(chunk);
@@ -806,7 +820,7 @@ export function serviceDispatcher(services, base = "/api", options = {}) {
             if (!res.headersSent && !res.destroyed) { res.writeHead(400); res.end(); }
             return;
         }
-        if (raw === null) { res.writeHead(413); res.end(); return; }
+        if (raw === null) { await drainBody(req); res.writeHead(413, { connection: "close" }); res.end(); return; }   /* as refuseEarly */
         const fields = Object.fromEntries(new URLSearchParams(raw.toString("utf8")));
         let outcome;
         try {
@@ -920,7 +934,8 @@ export function serviceDispatcher(services, base = "/api", options = {}) {
             try {
                 body = await readJson(req);
             } catch (error) {
-                return send(res, error.status ?? 400, { error: `bad request: ${error.message}` }), true;
+                await refuseEarly(req, res, error.status ?? 400, { error: `bad request: ${error.message}` });
+                return true;
             }
             if (typeof body?.client !== "string" || !body.client) return send(res, 400, { error: "client id required" }), true;
             // Same ownership rule as the stream: an id the server did not mint, or one that belongs
@@ -1015,7 +1030,8 @@ export function serviceDispatcher(services, base = "/api", options = {}) {
             args = (await readJson(req)) ?? [];
             if (!Array.isArray(args)) throw new Error("body must be a JSON array of arguments");
         } catch (error) {
-            return send(res, error.status ?? 400, { error: `bad request: ${error.message}` }), true;
+            await refuseEarly(req, res, error.status ?? 400, { error: `bad request: ${error.message}` });
+            return true;
         }
         let context;
         try {
